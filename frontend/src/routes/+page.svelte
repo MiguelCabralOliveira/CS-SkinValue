@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { api, type Item, type ForecastResponse } from '$lib/api';
+	import { api, type Item, type ForecastResponse, type ArbitrageResponse } from '$lib/api';
 	import ForecastChart from '$lib/ForecastChart.svelte';
 
 	let query = $state('');
@@ -9,6 +9,7 @@
 	let model = $state('chronos');
 	let availableModels: string[] = $state(['chronos']);
 	let forecastResult: ForecastResponse | null = $state(null);
+	let arb: ArbitrageResponse | null = $state(null);
 	let loading = $state(false);
 	let error: string | null = $state(null);
 
@@ -42,6 +43,9 @@
 		suggestions = [];
 		forecastResult = null;
 		error = null;
+		// Cross-market quotes don't need the model — fetch them right away.
+		arb = null;
+		api.arbitrage(it.name).then((a) => (arb = a)).catch(() => (arb = null));
 	}
 
 	async function runForecast() {
@@ -119,6 +123,36 @@
 	<div class="error">⚠ {error}</div>
 {/if}
 
+{#if arb && arb.quotes.length > 1}
+	<section class="arb">
+		<div class="arb-head">
+			<h2>Cross-market prices</h2>
+			<div class="spread" class:good={arb.spread_pct > 0}>
+				Buy <strong>{arb.cheapest_buy_market}</strong> ${arb.cheapest_buy_price.toFixed(2)}
+				→ sell <strong>{arb.best_sell_market}</strong> net ${arb.best_sell_net.toFixed(2)}
+				<span class="spread-pct">{arb.spread_pct > 0 ? '+' : ''}{arb.spread_pct.toFixed(1)}%</span>
+			</div>
+		</div>
+		<table class="arb-table">
+			<thead>
+				<tr><th>Market</th><th>Buy</th><th>Sell fee</th><th>Net if sold</th><th>Volume</th></tr>
+			</thead>
+			<tbody>
+				{#each arb.quotes as q}
+					<tr class:cheapest={q.market === arb.cheapest_buy_market} class:bestsell={q.market === arb.best_sell_market}>
+						<td>{q.market}{q.market === arb.cheapest_buy_market ? ' 🟢' : ''}{q.market === arb.best_sell_market ? ' 💰' : ''}</td>
+						<td>${q.buy_price.toFixed(2)}</td>
+						<td>{(q.sell_fee * 100).toFixed(0)}%</td>
+						<td>${q.net_sell.toFixed(2)}</td>
+						<td>{q.volume ?? '—'}</td>
+					</tr>
+				{/each}
+			</tbody>
+		</table>
+		<small class="arb-note">Indicative spreads from live quotes — not guaranteed fills. Steam funds aren't cashable.</small>
+	</section>
+{/if}
+
 {#if forecastResult}
 	<section class="result">
 		<div class="kpi-row">
@@ -146,6 +180,16 @@
 					[${forecastResult.points.at(-1)!.lower.toFixed(2)},
 					${forecastResult.points.at(-1)!.upper.toFixed(2)}]
 				</span>
+			</div>
+			<div class="kpi">
+				<span class="label">Backtest err</span>
+				{#if forecastResult.backtest}
+					<span class="val small-val" title="Rolling-origin backtest, {forecastResult.backtest.n_folds} folds">
+						±{forecastResult.backtest.mape_h7.toFixed(1)}% MAPE
+					</span>
+				{:else}
+					<span class="val small-val muted">n/a</span>
+				{/if}
 			</div>
 		</div>
 
@@ -286,6 +330,26 @@
 	.kpi .val.up { color: #34d399; }
 	.kpi .val.down { color: #f87171; }
 	.kpi .small-val { font-size: 0.9rem; color: #8b91a3; }
+	.kpi .muted { opacity: 0.6; }
+	.arb {
+		background: #14161e;
+		border: 1px solid #1f2230;
+		border-radius: 12px;
+		padding: 1.25rem;
+		margin-bottom: 1.5rem;
+	}
+	.arb-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 0.5rem; }
+	.arb h2 { margin: 0; font-size: 1.1rem; font-weight: 600; }
+	.arb .spread { font-size: 0.9rem; color: #8b91a3; }
+	.arb .spread strong { color: #e6e8eb; text-transform: capitalize; }
+	.arb .spread-pct { color: #34d399; font-weight: 600; margin-left: 0.3rem; }
+	.arb-table { width: 100%; border-collapse: collapse; margin-top: 0.9rem; font-size: 0.88rem; font-variant-numeric: tabular-nums; }
+	.arb-table th, .arb-table td { padding: 0.45rem 0.7rem; text-align: left; border-bottom: 1px solid #1f2230; }
+	.arb-table th { color: #8b91a3; font-weight: 500; font-size: 0.76rem; text-transform: uppercase; }
+	.arb-table td:first-child { text-transform: capitalize; }
+	.arb-table tr.cheapest td { color: #34d399; }
+	.arb-table tr.bestsell td { font-weight: 600; }
+	.arb-note { display: block; margin-top: 0.7rem; color: #6b7280; font-size: 0.78rem; }
 	.placeholder { text-align: center; padding: 3rem 1rem; color: #8b91a3; }
 	.placeholder .hint { font-size: 0.85rem; margin-top: 0.5rem; }
 	.error {

@@ -14,3 +14,10 @@ statsmodels>=0.14.0
 scipy>=1.13.0
 scikit-learn>=1.5.0
 lightgbm>=4.5.0
+
+# --- API / serving ---
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+
+# --- Forecasting (foundation models) ---
+chronos-forecasting>=1.4.0

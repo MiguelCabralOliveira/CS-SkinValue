@@ -29,7 +29,10 @@ from forecasting import forecast, list_available_models
 from forecasting.inference import forecast_batch
 
 import polars as pl
-from ETL.config import WHITELIST_TIERS_PARQUET, ITEMS_PARQUET
+from ETL.config import WHITELIST_TIERS_PARQUET, ITEMS_PARQUET, PROCESSED_DIR
+from arbitrage import arbitrage as compute_arbitrage
+
+BACKTEST_PARQUET = PROCESSED_DIR / "backtest.parquet"
 
 
 # ---------------------------------------------------------------------------
@@ -52,6 +55,23 @@ app.add_middleware(
 # Cached lookups
 # ---------------------------------------------------------------------------
 _items_cache: Optional[pl.DataFrame] = None
+_backtest_cache: Optional[dict] = None
+
+
+def _load_backtest() -> dict:
+    """Map name → {mape_h1, mape_h7, n_folds} from the precomputed backtest."""
+    global _backtest_cache
+    if _backtest_cache is not None:
+        return _backtest_cache
+    out: dict = {}
+    if BACKTEST_PARQUET.exists():
+        df = pl.read_parquet(BACKTEST_PARQUET).filter(pl.col("mape_h7").is_not_null())
+        for r in df.to_dicts():
+            out[r["name"]] = {
+                "mape_h1": r["mape_h1"], "mape_h7": r["mape_h7"], "n_folds": r["n_folds"],
+            }
+    _backtest_cache = out
+    return out
 
 
 def _load_items() -> pl.DataFrame:
@@ -111,15 +131,28 @@ class ForecastPoint(BaseModel):
     upper: float
 
 
+class HistoryPoint(BaseModel):
+    date: str
+    price: float
+
+
+class Backtest(BaseModel):
+    mape_h1: float
+    mape_h7: float
+    n_folds: int
+
+
 class ForecastResponse(BaseModel):
     name: str
     model: str
     horizon: int
     anchor_price: float
     anchor_date: str
+    history: list[HistoryPoint]
     points: list[ForecastPoint]
     change_pct_7d: Optional[float] = None
     direction: str
+    backtest: Optional[Backtest] = None
 
 
 class BatchRequest(BaseModel):
@@ -201,6 +234,10 @@ def get_forecast(
         horizon=f.horizon,
         anchor_price=f.context_price,
         anchor_date=f.context_last_date.isoformat(),
+        history=[
+            HistoryPoint(date=d.isoformat(), price=float(p))
+            for d, p in zip(f.history_dates, f.history_prices)
+        ],
         points=[
             ForecastPoint(
                 date=d.isoformat(),
@@ -212,6 +249,7 @@ def get_forecast(
         ],
         change_pct_7d=change_pct,
         direction=_direction(f.context_price, final_point),
+        backtest=(Backtest(**bt) if (bt := _load_backtest().get(f.name)) else None),
     )
 
 
@@ -238,6 +276,48 @@ def batch_forecast(req: BatchRequest):
         except Exception as e:
             results.append(BatchItemResult(name=name, error=str(e)))
     return results
+
+
+# ---------------------------------------------------------------------------
+# Arbitrage — cross-market quotes
+# ---------------------------------------------------------------------------
+class MarketQuoteModel(BaseModel):
+    market: str
+    buy_price: float
+    volume: Optional[float] = None
+    sell_fee: float
+    net_sell: float
+
+
+class ArbitrageResponse(BaseModel):
+    name: str
+    steam_price: Optional[float] = None
+    cheapest_buy_market: str
+    cheapest_buy_price: float
+    best_sell_market: str
+    best_sell_net: float
+    spread_abs: float
+    spread_pct: float
+    quotes: list[MarketQuoteModel]
+
+
+@app.get("/api/arbitrage", response_model=ArbitrageResponse)
+def get_arbitrage(name: str = Query(..., min_length=1)):
+    try:
+        a = compute_arbitrage(name)
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    return ArbitrageResponse(
+        name=a.name,
+        steam_price=a.steam_price,
+        cheapest_buy_market=a.cheapest_buy.market,
+        cheapest_buy_price=a.cheapest_buy.buy_price,
+        best_sell_market=a.best_sell.market,
+        best_sell_net=a.best_sell.net_sell,
+        spread_abs=a.spread_abs,
+        spread_pct=a.spread_pct,
+        quotes=[MarketQuoteModel(**vars(q)) for q in a.quotes],
+    )
 
 
 # ---------------------------------------------------------------------------

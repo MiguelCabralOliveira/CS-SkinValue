@@ -50,6 +50,8 @@ class Forecast:
     lower: np.ndarray           # 10th percentile
     upper: np.ndarray           # 90th percentile
     metadata: dict = field(default_factory=dict)
+    history_dates: list[date] = field(default_factory=list)   # recent observed dates
+    history_prices: np.ndarray = field(default_factory=lambda: np.empty(0))  # recent observed prices
 
     def as_dataframe(self) -> pl.DataFrame:
         return pl.DataFrame({
@@ -190,6 +192,7 @@ def forecast(
     horizon: int = 7,
     model: ModelName = "chronos",
     min_history: int = 256,
+    history_tail: int = 90,
 ) -> Forecast:
     """Generate a forecast for an item.
 
@@ -237,6 +240,11 @@ def forecast(
 
     forecast_dates = [anchor_date + timedelta(days=i + 1) for i in range(horizon)]
 
+    # Recent observed history so the client can plot context behind the forecast.
+    hist = series.tail(history_tail)
+    history_dates = hist["date"].to_list()
+    history_prices = hist["price"].to_numpy().astype(float)
+
     return Forecast(
         name=name,
         model_used=model,
@@ -248,6 +256,8 @@ def forecast(
         lower=np.asarray(lower, dtype=float),
         upper=np.asarray(upper, dtype=float),
         metadata={"n_context_days": int(series.height)},
+        history_dates=history_dates,
+        history_prices=history_prices,
     )
 
 
