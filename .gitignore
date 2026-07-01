@@ -134,6 +134,12 @@ celerybeat.pid
 # SageMath parsed files
 *.sage.py
 
+# Project data outputs
+data/
+
+# macOS
+.DS_Store
+
 # Environments
 .env
 .envrc
